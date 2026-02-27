@@ -126,6 +126,78 @@ export interface CreateExportOptions {
   description?: string;
 }
 
+// ── Secret types ──
+
+export interface SecretMetadata {
+  id: string;
+  config_slug: string;
+  key: string;
+  environment: string;
+  algorithm: string;
+  kdf: string;
+  fingerprint: string;
+  created_at: string;
+  last_accessed_at: string | null;
+}
+
+export interface SecretData {
+  id: string;
+  config_slug: string;
+  key: string;
+  environment: string;
+  ciphertext: string;
+  algorithm: string;
+  kdf: string;
+  fingerprint: string;
+  created_at: string;
+  last_accessed_at: string | null;
+}
+
+export interface SecretAuditEntry {
+  id: number;
+  secret_key: string;
+  config_slug: string;
+  environment: string;
+  action: string;
+  timestamp: string;
+  performed_by_api_key: string | null;
+  ip_address: string | null;
+  old_fingerprint: string | null;
+  new_fingerprint: string | null;
+}
+
+export interface SecretListResult {
+  config_slug: string;
+  secrets: SecretMetadata[];
+}
+
+export interface SetSecretOptions {
+  configSlug: string;
+  key: string;
+  ciphertext: string;
+  environment?: string;
+  algorithm?: string;
+  kdf?: string;
+  fingerprint?: string;
+}
+
+export interface GetSecretOptions {
+  environment?: string;
+}
+
+export interface ListSecretsOptions {
+  environment?: string;
+}
+
+export interface DeleteSecretOptions {
+  environment?: string;
+}
+
+export interface SecretAuditLogOptions {
+  environment?: string;
+  limit?: number;
+}
+
 // ── Drop-in function types ──
 
 export interface GetConfigOptions {
@@ -142,4 +214,10 @@ export interface ConfigureOptions {
   baseUrl?: string;
   defaultLabel?: string;
   defaultTtl?: number;
+  /** Hex-encoded 32-byte master key for client-side encryption/decryption. */
+  masterKey?: string;
+  /** Environment variable name containing the master key (default: CONFIGPIG_MASTER_KEY). */
+  masterKeyEnv?: string;
+  /** When true, automatically decrypt vault:encrypted: values in fetched configs. */
+  decryptSecrets?: boolean;
 }

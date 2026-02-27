@@ -9,6 +9,7 @@ let _client: Client | null = null;
 let _clientConfig: [string, string] = ["", ""]; // [apiKey, baseUrl]
 const _defaults: Partial<ConfigureOptions> = {};
 const _cache = new Map<string, { text: string; expiry: number }>();
+let _masterKey: Uint8Array | null = null;
 
 export function configure(options: ConfigureOptions): void {
   if (options.apiKey !== undefined) _defaults.apiKey = options.apiKey;
@@ -16,6 +17,32 @@ export function configure(options: ConfigureOptions): void {
   if (options.defaultLabel !== undefined)
     _defaults.defaultLabel = options.defaultLabel;
   if (options.defaultTtl !== undefined) _defaults.defaultTtl = options.defaultTtl;
+  if (options.decryptSecrets !== undefined)
+    _defaults.decryptSecrets = options.decryptSecrets;
+  if (options.masterKeyEnv !== undefined)
+    _defaults.masterKeyEnv = options.masterKeyEnv;
+
+  // Load master key from hex string or env
+  if (options.masterKey) {
+    const hex = options.masterKey;
+    _masterKey = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < _masterKey.length; i++) {
+      _masterKey[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    }
+  } else if (options.masterKeyEnv || options.decryptSecrets) {
+    try {
+      const envVar = options.masterKeyEnv ?? "CONFIGPIG_MASTER_KEY";
+      const raw = process.env[envVar];
+      if (raw && /^[0-9a-fA-F]{64}$/.test(raw)) {
+        _masterKey = new Uint8Array(32);
+        for (let i = 0; i < 32; i++) {
+          _masterKey[i] = parseInt(raw.slice(i * 2, i * 2 + 2), 16);
+        }
+      }
+    } catch {
+      // Master key not available — decryption disabled
+    }
+  }
 
   // Rebuild singleton with new config
   const resolvedKey = _defaults.apiKey ?? "";
@@ -109,7 +136,23 @@ export async function getConfig(
     });
 
     if (resp.ok && resp.data) {
-      const text = resp.data.content;
+      let text = resp.data.content;
+
+      // Transparently decrypt vault:encrypted: values if master key available
+      if (_defaults.decryptSecrets && _masterKey && text.includes("vault:encrypted:")) {
+        const { decryptSecret } = await import("./crypto/vault.js");
+        const mk = _masterKey;
+        text = text.replace(
+          /vault:encrypted:[A-Za-z0-9+/=]+/g,
+          (match) => {
+            try {
+              return decryptSecret(mk, match);
+            } catch {
+              return match;
+            }
+          }
+        );
+      }
 
       // Store in cache
       if (resolvedTtl) {

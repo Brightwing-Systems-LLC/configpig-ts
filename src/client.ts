@@ -1,6 +1,7 @@
 /** ConfigPig API client. */
 
 import { requestWithRetry } from "./http.js";
+import { loadMasterKey } from "./crypto/vault.js";
 import type {
   APIResponse,
   Config,
@@ -10,10 +11,19 @@ import type {
   CreateConfigOptions,
   CreateExportOptions,
   CreateLabelOptions,
+  DeleteSecretOptions,
   Export,
   FetchOptions,
   FetchResult,
+  GetSecretOptions,
   HealthCheck,
+  ListSecretsOptions,
+  SecretAuditEntry,
+  SecretAuditLogOptions,
+  SecretData,
+  SecretListResult,
+  SecretMetadata,
+  SetSecretOptions,
   TeamLabel,
   UpdateConfigOptions,
 } from "./types.js";
@@ -21,11 +31,17 @@ import type {
 export interface ClientConfig {
   apiKey?: string;
   baseUrl?: string;
+  /** Raw 32-byte master key for client-side encryption/decryption. */
+  masterKey?: Uint8Array;
+  /** Environment variable name containing hex-encoded master key. */
+  masterKeyEnv?: string;
 }
 
 export class Client {
   private apiKey: string;
   private baseUrl: string;
+  private _masterKey?: Uint8Array;
+  private _masterKeyEnv?: string;
 
   constructor(config: ClientConfig = {}) {
     this.apiKey =
@@ -35,6 +51,15 @@ export class Client {
       process.env.CONFIGPIG_URL ??
       "https://configpig.com"
     ).replace(/\/+$/, "");
+    this._masterKey = config.masterKey;
+    this._masterKeyEnv = config.masterKeyEnv;
+  }
+
+  /** Lazily load master key from field or environment. */
+  private getMasterKey(): Uint8Array {
+    if (this._masterKey) return this._masterKey;
+    this._masterKey = loadMasterKey(this._masterKeyEnv);
+    return this._masterKey;
   }
 
   private headers(): Record<string, string> {
@@ -453,6 +478,166 @@ export class Client {
       statusCode,
       error: Client.extractError(statusCode, data),
     };
+  }
+
+  // ── Secrets ──
+
+  async setSecret(
+    options: SetSecretOptions
+  ): Promise<APIResponse<SecretMetadata>> {
+    const body = {
+      config_slug: options.configSlug,
+      key: options.key,
+      environment: options.environment ?? "default",
+      ciphertext: options.ciphertext,
+      algorithm: options.algorithm ?? "aes-256-gcm",
+      kdf: options.kdf ?? "argon2id",
+      fingerprint: options.fingerprint ?? "",
+    };
+    const { statusCode, data } = await this.request("POST", "/secrets/", {
+      body,
+    });
+    if (statusCode === 201 && data) {
+      return { ok: true, statusCode, data: data as SecretMetadata };
+    }
+    return {
+      ok: false,
+      statusCode,
+      error: Client.extractError(statusCode, data),
+    };
+  }
+
+  async getSecret(
+    configSlug: string,
+    key: string,
+    options?: GetSecretOptions
+  ): Promise<APIResponse<SecretData>> {
+    const params: Record<string, string> = {};
+    if (options?.environment) params.environment = options.environment;
+    const { statusCode, data } = await this.request(
+      "GET",
+      `/secrets/${configSlug}/keys/${key}`,
+      { params: Object.keys(params).length ? params : undefined }
+    );
+    if (statusCode === 200 && data) {
+      return { ok: true, statusCode, data: data as SecretData };
+    }
+    return {
+      ok: false,
+      statusCode,
+      error: Client.extractError(statusCode, data),
+    };
+  }
+
+  async listSecrets(
+    configSlug: string,
+    options?: ListSecretsOptions
+  ): Promise<APIResponse<SecretListResult>> {
+    const params: Record<string, string> = {};
+    if (options?.environment) params.environment = options.environment;
+    const { statusCode, data } = await this.request(
+      "GET",
+      `/secrets/${configSlug}/`,
+      { params: Object.keys(params).length ? params : undefined }
+    );
+    if (statusCode === 200 && data) {
+      return { ok: true, statusCode, data: data as SecretListResult };
+    }
+    return {
+      ok: false,
+      statusCode,
+      error: Client.extractError(statusCode, data),
+    };
+  }
+
+  async deleteSecret(
+    configSlug: string,
+    key: string,
+    options?: DeleteSecretOptions
+  ): Promise<APIResponse<null>> {
+    const params: Record<string, string> = {};
+    if (options?.environment) params.environment = options.environment;
+    const { statusCode, data } = await this.request(
+      "DELETE",
+      `/secrets/${configSlug}/keys/${key}`,
+      { params: Object.keys(params).length ? params : undefined }
+    );
+    if (statusCode === 204) {
+      return { ok: true, statusCode, data: null };
+    }
+    return {
+      ok: false,
+      statusCode,
+      error: Client.extractError(statusCode, data),
+    };
+  }
+
+  async secretAuditLog(
+    configSlug: string,
+    options?: SecretAuditLogOptions
+  ): Promise<APIResponse<SecretAuditEntry[]>> {
+    const params: Record<string, string> = {};
+    if (options?.environment) params.environment = options.environment;
+    if (options?.limit !== undefined) params.limit = String(options.limit);
+    const { statusCode, data } = await this.request(
+      "GET",
+      `/secrets/${configSlug}/audit-log`,
+      { params: Object.keys(params).length ? params : undefined }
+    );
+    if (statusCode === 200 && Array.isArray(data)) {
+      return { ok: true, statusCode, data: data as SecretAuditEntry[] };
+    }
+    return {
+      ok: false,
+      statusCode,
+      error: Client.extractError(statusCode, data),
+    };
+  }
+
+  // ── Plaintext Secret Helpers ──
+
+  /**
+   * Encrypt a plaintext secret client-side and store it.
+   * Requires a master key (via constructor or environment).
+   */
+  async setSecretPlaintext(
+    configSlug: string,
+    key: string,
+    plaintext: string,
+    options?: { environment?: string }
+  ): Promise<APIResponse<SecretMetadata>> {
+    const mk = this.getMasterKey();
+    const { encryptSecret, fingerprint } = await import("./crypto/vault.js");
+    const ciphertext = encryptSecret(mk, plaintext);
+    const fp = await fingerprint(ciphertext);
+    return this.setSecret({
+      configSlug,
+      key,
+      ciphertext,
+      environment: options?.environment,
+      algorithm: "aes-256-gcm",
+      kdf: "argon2id",
+      fingerprint: fp,
+    });
+  }
+
+  /**
+   * Fetch a secret and decrypt it client-side.
+   * Requires a master key (via constructor or environment).
+   */
+  async getSecretDecrypted(
+    configSlug: string,
+    key: string,
+    options?: GetSecretOptions
+  ): Promise<APIResponse<string>> {
+    const resp = await this.getSecret(configSlug, key, options);
+    if (!resp.ok || !resp.data) {
+      return { ok: false, statusCode: resp.statusCode, error: resp.error };
+    }
+    const mk = this.getMasterKey();
+    const { decryptSecret } = await import("./crypto/vault.js");
+    const plaintext = decryptSecret(mk, resp.data.ciphertext);
+    return { ok: true, statusCode: resp.statusCode, data: plaintext };
   }
 
   // ── System ──
