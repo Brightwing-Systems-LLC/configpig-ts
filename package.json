@@ -5,10 +5,21 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "pig": "./dist/cli/main.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./crypto": {
+      "types": "./dist/crypto/index.d.ts",
+      "import": "./dist/crypto/index.js"
+    },
+    "./rotation": {
+      "types": "./dist/rotation/index.d.ts",
+      "import": "./dist/rotation/index.js"
     }
   },
   "files": [
@@ -46,5 +57,9 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.4"
+  },
+  "dependencies": {
+    "commander": "^14.0.3",
+    "hash-wasm": "^4.12.0"
   }
 }
